@@ -1,0 +1,105 @@
+---
+title: "Week 3 Project"
+author: "TB"
+date: '2022-05-28'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## NYPD Shooting Incident Data (Historic)
+
+### Project Question
+For this project, I am interested in seeing if there is any sort of relationship between the pandemic (March 2020 - December 2020) and the number of shootings and murders reported by NYPD. I also want to determine if the number of shootings in a given month can be used to predict the number of murders in that month.
+
+### Project Steps
+First I will load in the necessary packages.
+
+```{r loadInPackages, message=FALSE}
+library(tidyverse)
+library(lubridate)
+```
+
+Next, I will read in the NYPD shooting data using the link provided in the course materials. This dataset is publicly available and it contains a breakdown of every shooting event that has taken place in NYC going back to 2006 and through the end of the previous year. At the time of this study, that means this data goes from 2006 to the end of 2020. 
+```{r readInData, message=FALSE}
+dataUrl <- "https://data.cityofnewyork.us/api/views/833y-fsy8/rows.csv?accessType=DOWNLOAD"
+nypdShootingData <- read_csv(dataUrl)
+```
+
+Now, I will tidy and transform the data. As mentioned, I am interested in seeing how Covid-19 affected the number of shootings and murders reported by NYPD. To do this, I want to manipulate the dataset to contain shootings by month-year. 
+
+```{r tidyData}
+# Restrict data to just Murder Flag and Date of Occurance
+nypdShootingData <- nypdShootingData %>% select (c(STATISTICAL_MURDER_FLAG, OCCUR_DATE))
+# Make the date of occurance a Date object
+nypdShootingData <- nypdShootingData %>% mutate(OCCUR_DATE = mdy(OCCUR_DATE))
+# Add a column for month_year 
+nypdShootingData <- nypdShootingData %>% add_column(month_year = format(nypdShootingData$OCCUR_DATE, "%m-%Y"))
+# add a column for the number of shootings each row represents. This will be used when grouping by month_year
+nypdShootingData <- nypdShootingData %>% add_column(shooting = 1)
+# Group by month_year to get total shootings and total murders by month
+nypdShootingDataByMonth <- nypdShootingData %>% group_by(month_year) %>% summarize(shootings = sum(shooting), murders = sum(STATISTICAL_MURDER_FLAG))
+
+# Set the day of each month to 15 (the middle). This is necessary since date objects require a month, year, and day
+nypdShootingDataByMonth <- nypdShootingDataByMonth %>% mutate(month_year = as.Date(paste("15-",month_year,sep=""), format = '%d-%m-%Y'))
+
+summary(nypdShootingDataByMonth)
+```
+
+Now that I have my data in a usable format, I can visualize the data. I am interested in seeing if shootings per month were lower or higher than expected during the first year of the pandemic. To do this, I can plot the shootings per month with lines to indicate the mean, median, and start of the pandemic. 
+```{r visualizeShootingsData}
+# Make base scatter plot
+shootings_plot <- nypdShootingDataByMonth %>% ggplot(aes(x=month_year, y=shootings)) + geom_point() 
+# Add vertical one at March 1, 2020 for start of pandemic
+shootings_plot <- shootings_plot + geom_vline(aes(xintercept = dmy("01-03-2020"), color = "Start of Pandemic"), linetype = "dashed") 
+# Add horizontal lines for mean and median
+shootings_plot <- shootings_plot + geom_hline(aes(yintercept = median(shootings), color = "Median Line"), linetype="dashed") 
+shootings_plot <- shootings_plot + geom_hline(aes(yintercept = mean(shootings), color = "Mean Line"), linetype="dashed") 
+# Add Title and Legend
+shootings_plot <- shootings_plot + ggtitle("Total Shootings per Month") + xlab("") + ylab("") + theme(plot.title = element_text(hjust=0.5)) + labs(colour="Legend")
+# Display plot
+shootings_plot
+
+```
+
+It would appear that the pandemic did have an effect on the total number of shootings per month reported by NYPD. The 3 highest months in the last 14 years were all after the start of the pandemic. Also, every month after the pandemic was above the mean and median. Now I will see if the same is true for murders per month.
+
+```{r visualizeMurdersData}
+# Make base scatter plot
+murders_plot <- nypdShootingDataByMonth %>% ggplot(aes(x=month_year, y=murders)) + geom_point()
+# Add vertical one at March 1, 2020 for start of pandemic
+murders_plot <- murders_plot + geom_vline(aes(xintercept = dmy("01-03-2020"), color = "Start of Pandemic"), linetype = "dashed")
+# Add horizontal lines for mean and median
+murders_plot <- murders_plot + geom_hline(aes(yintercept = median(murders), color = "Median Line"), linetype="dashed") 
+murders_plot <- murders_plot + geom_hline(aes(yintercept = mean(murders), color = "Mean Line"), linetype="dashed") 
+# Add Title and Legend
+murders_plot <- murders_plot + ggtitle("Total Murders per Month") + xlab("") + ylab("") + theme(plot.title = element_text(hjust=0.5)) + labs(colour="Legend")
+# Display Plot
+murders_plot
+```
+
+It would also appear that the pandemic had an impact on the total murders per month. The months immediately following the start of the pandemic are once again significantly higher than the mean / median. However, in this case, the numbers actually drop below the mean / median in the last few months of 2020. One thing that I notice when looking at these plots is that it seems like shootings per month and murders per month follow a similar pattern. I am curious to see if total shootings per month can be used to predict the total number of murders per month. I will create a simple linear model to test this. 
+
+```{r model}
+# Create simple linear model 
+model <- lm(murders ~ shootings, data=nypdShootingDataByMonth)
+# Create dataset with prediction as column
+nypdShootingDataByMonthWithPrediction <- nypdShootingDataByMonth %>% mutate(prediction=predict(model))
+# Create base plot
+shootings_murders_plot <- nypdShootingDataByMonthWithPrediction %>% ggplot() + geom_point(aes(x=shootings, y=murders), color = "blue") + geom_line(aes(x = shootings, y=prediction), color = "red")
+# Add labels and title
+shootings_plot <- shootings_murders_plot + xlab("Shootings per Month") + ylab("Murders per Month") + ggtitle("Using Total Shootings per Month to Predict Total Murders per Month") + theme(plot.title = element_text(hjust=0.5)) 
+# Display plot
+shootings_plot
+```
+
+As you can see, total shootings per month and total murders per month definitely have a strong correlation. In fact, our simple linear model does a decent job at predicting the number of murders using the number of shootings. 
+
+## Conclusion
+As shown through this brief study, the pandemic appears to have had an effect on the number of shootings and number of muders per month that are reported by NYPD. In addition to this, the total number of shootings in a given month can be used to get a rough estimate on the total number of murders in that month. If I were to continue this study, I would try to determine if there was an additional parameter that could help explain what exactly about the pandemic caused the numbers to increase. Maybe there is something in common between the months following the lockdown and spikes seen previously in the data. I would also expand my simple linear model to contain additional predictor variables to make my murders per month predictions more accurate. 
+
+## Bias Identification
+As with any study, biases are always present. Some biases of this dataset could include the types of shootings and murders that get reported. Do all shootings get reported or are some missed? Are these ones that are missed more or less likely to be murders? To continue this study, I would further investigate the authenticity of this dataset. In addition to this, I was personally biased toward looking for a connection between the pandemic and this data since the course materials were looking at pandemic data. This is what led me to look for this connection in the data. To mitigate this personal bias, I tried to let the results speak for themselves instead of trying to get an expected result out of the data. In fact, I actually expected the number of shootings/murders to go down since people were on lockdown/quarantining, so I was quite surprised by what the data revealed. 
+

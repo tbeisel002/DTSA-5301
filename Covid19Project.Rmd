@@ -1,0 +1,175 @@
+---
+title: "Covid19Project"
+author: "TB"
+date: '2022-06-04'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## John Hopkins Covid 19 Data Project
+
+### Project Question
+I am interested in exploring the relationship between the state mask mandate in the state of Ohio and new covid cases and deaths per day. Specifically, is there a relationship between new cases / deaths per day and whether or not a mask mandate was in place? Furthermore, can the new cases / deaths for a given day be used to predict whether or not a mask mandate was in place on that day?
+
+### Project Steps
+First I will load in the necessary packages and set the seed.
+
+```{r loadInPackages, message=FALSE}
+library(tidyverse)
+library(lubridate)
+set.seed(22)
+```
+
+
+Next, I will read in the John Hopkins Covid-19 data. This dataset is publicly available and it contains various datasets with information on Covid-19 cases and deaths in the World and in the US. For this project, I only need the time series US cases and US Deaths data. 
+```{r readInData, message=FALSE}
+# Read in urls
+UsCasesDataUrl <- "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/time_series_covid19_confirmed_US.csv"
+UsDeathsDataUrl <- "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/time_series_covid19_deaths_US.csv"
+
+# Read in csv files into tibbles
+usCasesData <- read_csv(UsCasesDataUrl)
+usDeathsData <- read_csv(UsDeathsDataUrl)
+```
+
+Now, I will tidy and transform the data. I will want the cases and deaths to be in the same dataset, so I will need to combine the two. I also only care about the data for the state of Ohio, so I will need to filter out all of the non-Ohio rows and aggregate the Ohio counties into one data point for each day. I also care about newly recorded cases and deaths per day instead of the total counts, so I will add additional columns for new cases and new deaths per day. Next, the deaths data has a row with the population so I will delete that before merging the datasets. Lastly, I will filter the data to only consider Mar 14, 2020 - Mar 14, 2022. This is because I am not interested in the first few months of 2020 before cases began spreading in Ohio and the cases data begins only updating once per week after Mar 14, 2022.   
+
+```{r tidyData, warning=FALSE}
+# Organize cases data by date
+usCasesData <- usCasesData %>% pivot_longer(cols = -c(Province_State, Country_Region, UID, iso2, iso3, code3, FIPS, Admin2, Lat, Long_, Combined_Key), names_to = "date", values_to = "cases")
+# Remove unneeded columns
+usCasesData <- usCasesData %>% select(-c(Lat, Long_, UID, FIPS, iso2, iso3, code3, Combined_Key))
+# Filter to just Ohio cases
+ohioCasesData <- usCasesData[usCasesData$Province_State == "Ohio",]
+# Aggregate cases data per day across Ohio
+ohioCasesDataWholeState <- ohioCasesData %>% group_by(date) %>% summarize(TotalCasesInState = sum(cases))
+# Convert date column from chr to date object
+ohioCasesDataWholeState <- ohioCasesDataWholeState %>% mutate(date = mdy(date))
+# Order the data by date
+ohioCasesDataWholeState <- ohioCasesDataWholeState[order(ohioCasesDataWholeState$date), ]
+# Create a new column for new cases per day
+ohioCasesDataWholeState <- ohioCasesDataWholeState %>% mutate(new_cases = TotalCasesInState - lag(TotalCasesInState, default=0))
+
+# Organize deaths data by date
+usDeathsData <- usDeathsData %>% pivot_longer(cols = -c(Province_State, Country_Region, UID, iso2, iso3, code3, FIPS, Admin2, Lat, Long_, Combined_Key), names_to = "date", values_to = "cases")
+# Remove unneeded columns
+usDeathsData <- usDeathsData %>% select(-c(Lat, Long_, UID, FIPS, iso2, iso3, code3, Combined_Key))
+# Filter to just Ohio cases
+ohioDeathsDataByCounty <- usDeathsData[usDeathsData$Province_State == "Ohio", ]
+# Aggregate deaths data per day across Ohio
+ohioDeathsData <- ohioDeathsDataByCounty %>% group_by(date) %>% summarize(TotalDeathsInState = sum(cases))
+# Convert date column from chr to date object
+ohioDeathsData <- ohioDeathsData %>% mutate(date = mdy(date))
+# Order by date
+ohioDeathsData <- ohioDeathsData[order(ohioDeathsData$date),]
+# Create column for new deaths per day
+ohioDeathsData <- ohioDeathsData %>% mutate(new_deaths = TotalDeathsInState - lag(TotalDeathsInState, default=0))
+# This dataset contains a row for population that is not a date, remove it here
+ohioDeathsData <- head(ohioDeathsData, -1)
+
+# Combine cases and deaths data
+ohio <- ohioCasesDataWholeState %>% full_join(ohioDeathsData)
+# Filter to dates from Mar 14, 2020 - Mar 14, 2022
+ohio <- ohio %>% filter(date >= as.Date("2020-03-14") & date <= as.Date("2022-03-14"))
+
+summary(ohio)
+ohio
+```
+
+As you can see, we are left with a dataset that shows the new cases / deaths per day from Mar 14, 2020 - Mar 14, 2022. Now I will add the ohio state mask mandate data to my dataset. To do this, I will create a new column and give it a 1 when there is a mask mandate for that day and a 0 when there isn't. The mask mandate data came from here: https://www.10tv.com/article/news/health/coronavirus/how-far-the-state-has-come-a-timeline-of-ohios-statewide-mask-mandate/530-c36e83d5-eb8a-4ef4-b8ff-028a8c7d0f3f
+
+I decided to start the mask mandate even when it only applied to the 7 most populated counties in Ohio since it was still a mandate issued by the state government and the majority of cases come from these densely populated areas.
+
+```{r addMaskMandateData}
+# Create a new column for whether or not ask mandate in place for that day
+ohio <- ohio %>% mutate(maskMandate = if_else(date < as.Date("2021-06-02") & date > as.Date("2020-07-08"), 1, 0))
+```
+
+Now that I have my data in a usable and ready to go format, I can visualize the data. I am interested in seeing the relationship between the mask mandate and the number of new cases per day in the state of Ohio. To do this, I can plot the new cases per day over time, with the mask mandate days in blue.
+
+```{r visualizeCasesData}
+# Seperate data by Mask Mandate column to plot with differnt colors
+maskMandateData <- ohio %>% filter(maskMandate == 1)
+nonMaskMandateData <- ohio %>% filter(maskMandate == 0)
+colors <- c("No Mask Mandate" = "black", "Mask Mandate" = "blue")
+
+# Create new cases plot
+new_cases_plot <- ggplot(nonMaskMandateData, aes(x=date, y=new_cases, color="No Mask Mandate")) +geom_point() + geom_point(data=maskMandateData, aes(x=date, y=new_cases, color="Mask Mandate")) + scale_color_manual(values = colors)
+# Add labels and legend
+new_cases_plot <- new_cases_plot + ggtitle("New Cases Plot") + xlab("") + ylab("New Cases") + theme(plot.title = element_text(hjust=0.5)) + labs(colour="Legend")
+
+new_cases_plot
+```
+
+This plot shows that the mask mandate took place during the first peak of cases. However, during the second / third peaks, no mask mandate was put in place. Let's see how this looks with new deaths per day. 
+
+```{r visualizeDeathsData}
+# Create new deaths plot
+new_deaths_plot <- ggplot(nonMaskMandateData, aes(x=date, y=new_deaths, color="No Mask Mandate")) +geom_point() + geom_point(data=maskMandateData, aes(x=date, y=new_deaths, color="Mask Mandate")) + scale_color_manual(values = colors)
+# Create labels and legend
+new_deaths_plot <- new_deaths_plot + ggtitle("New Deaths Plot") + xlab("") + ylab("New Deaths") + theme(plot.title = element_text(hjust=0.5)) + labs(colour="Legend")
+
+new_deaths_plot
+```
+
+Again, the state issued mask mandate took place during the first peak, and no mask mandate was put in place for the following peaks. Interestingly enough, new deaths per day reached its max value during the mask mandate while new cases per day maxed during the final peak (with no mask mandate). Since I am interested in seeing if the new cases / deaths for a given day can be used to predict whether or not a mask mandate was in place, I will now plot the cases by the deaths.
+
+```{r visualizeCasesAndDeaths}
+# Create cases / deaths plots
+cases_deaths <- ggplot(nonMaskMandateData, aes(x=new_cases, y=new_deaths, color="No Mask Mandate")) +geom_point() + geom_point(data=maskMandateData, aes(x=new_cases, y=new_deaths, color="Mask Mandate")) + scale_color_manual(values = colors)
+# Create labels and legend
+cases_deaths <- cases_deaths + ggtitle("Cases by Deaths") + xlab("New Cases") + ylab("New Deaths") + theme(plot.title = element_text(hjust=0.5)) + labs(colour="Legend")
+
+cases_deaths
+```
+
+In order to have a perfect logistic regression model, the different categories would need to be clustered in clear ways. As you can see, this is not the case here. There is a lot of overlap between the blue and black points. However, there is a cluster of blue points at the top and a cluster of black points to the right that could help the accuracy of a model. I will now build a logistic regression model and see how it performs. To do this, I will seperate my data into a training and testing set. The training set will be 90% of the data and will be used to train the model, while the remaining 10% will be used to test trained model. 
+
+```{r model}
+# Randomly order the rows
+rows <- sample(nrow(ohio))
+ohio <- ohio[rows,]
+# Create training set with 90% of data
+trainingData <- ohio[1:657,]
+# Create test set with remaining 10%
+testData <- ohio[658:731,]
+# Create logistic regression model
+model <- glm(maskMandate ~ new_cases+new_deaths, family=binomial(link="logit"), data=trainingData)
+summary(model)
+```
+
+This gives us the intercept and coefficient values as well as corresponding z scores. Now we will see how well the trained model works on the test data. I will also compare the results to randomly selecting 0 or 1 for each test data point and using a binomial distribution with the probability = to the proportion of 1s seen in the data. 
+```{r predictions}
+# Determine results using model
+prediction_results <- predict(model, newdata = testData, type="response")
+rounded_predictions <- ifelse(prediction_results > 0.5,1,0)
+model_error <- mean(rounded_predictions != testData$maskMandate)
+model_accuracy <- 1 - model_error
+
+# Determine results using random choice
+random_results <- runif(74)
+random_rounded <- ifelse(random_results > 0.5,1,0)
+random_error <- mean(random_rounded != testData$maskMandate)
+random_accuracy <- 1 - random_error
+
+# Determine results using binomial distribution
+binomialPredictions <- rbinom(74, 1, nrow(maskMandateData) / (nrow(nonMaskMandateData) + nrow(maskMandateData)))
+binomial_error <- mean(binomialPredictions != testData$maskMandate)
+binomial_accuracy <- 1 - binomial_error
+
+sprintf("Accuracy with predictive model = %f", model_accuracy)
+sprintf("Accuracy with random selection = %f", random_accuracy)
+sprintf("Accuracy with binomial distribution = %f", binomial_accuracy)
+```
+
+As you can see, the trained model performs slightly better than random choice and using a binomial distribution. This indicates that there is a relationship between new cases and deaths per day and whether or not a mask mandate was in place; however, it appears to be a weak relationship. 
+
+## Conclusion
+As shown through this brief study, there does appear to be a relationship between the new cases / deaths per day and whether or not a mask mandate was in place. However, the relationship appears to be fairly weak, with the trained logistic regression model only performing marginally better than more rudimentary methods. If I were to continue this study, I would test with other seeds. This would allow for different breakdowns of the training / testing data other than the one split that this study looks at it. It's possible that on average the trained model will do significantly better or worse than what was recorded in this study. I would also further this study by also factoring in vaccine data. This would add another variable that effects the transmission of the disease and would help to create a more complete picture. 
+
+## Bias Identification
+As with any study, biases are always present. Some biases of this dataset could include lags in reporting of cases or deaths. If different counties reported new cases or deaths differently each day, then the aggregated values for the whole state of Ohio would lose validity. Also, there could be a bias in the way deaths are reported. When multiple illnesses are present, were the deaths still attributed to Covid-19? If this changed over time than that could also alter the validity of this study. In addition to this, I was personally biased toward looking for a connection between these things in the state of Ohio because that is where I live. If I lived elsewhere, I would not have conducted this study. Also, like everyone, I have my personal thoughts on mask mandates that could effect my analysis. To mitigate this personal bias, I tried to let the results speak for themselves instead of trying to get an expected result out of the data. 
+
